@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "movie-crawler"
-version = "0.0.1-dev.20250906+f3582cb"
+version = "0.0.2"
 description = "A Python application for scraping movie information from DYTT8 and downloading movies"
 readme = "README.md"
 license = "MIT"
