@@ -1,0 +1,380 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      devTag:
+        description: '开发版本标签 (例如: 0.2.5-dev.20250515+a1b2c3d)'
+        required: true
+      releaseType:
+        description: '发布类型'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 添加写入权限，允许创建releases
+    outputs:
+      release_version: ${{ steps.prepare-release.outputs.release_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 获取所有历史记录和标签
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Checkout dev tag
+        run: |
+          git checkout ${{ github.event.inputs.devTag }}
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install toml
+        
+      - name: Create release branch
+        run: |
+          git checkout -b release/${{ github.event.inputs.devTag }}
+          
+      - name: Prepare release version
+        id: prepare-release
+        shell: bash
+        run: |
+          # 根据发布类型更新版本号
+          python .github/scripts/update_main_version.py --type=${{ github.event.inputs.releaseType }}
+          
+          # 获取更新后的版本号
+          RELEASE_VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
+          echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          echo "准备发布版本: $RELEASE_VERSION"
+          
+          # 提交版本更新
+          git add pyproject.toml
+          git commit -m "chore: bump version to $RELEASE_VERSION"
+
+      - name: Generate release notes
+        id: generate_release_notes
+        shell: bash
+        run: |
+          set -x  # 开启调试模式，显示执行的每一条命令
+          
+          # 获取当前版本号
+          RELEASE_VERSION="${{ steps.prepare-release.outputs.release_version }}"
+          echo "当前版本号: $RELEASE_VERSION"
+          
+          # 列出所有标签进行调试
+          echo "所有标签列表:"
+          git tag -l
+          
+          # 找到最近的发布版本标签，排除开发版本标签和当前版本
+          echo "查找最近的发布版本标签(排除当前版本和开发版本)..."
+          ALL_RELEASE_TAGS=$(git tag -l "v*.*.*" || echo "")
+          echo "所有发布标签: $ALL_RELEASE_TAGS"
+          
+          # 如果没有任何标签，使用第一个提交
+          if [ -z "$ALL_RELEASE_TAGS" ]; then
+            echo "没有找到任何发布标签"
+            FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+            RANGE="${FIRST_COMMIT}..HEAD"
+            PREVIOUS_VERSION="初始提交"
+            echo "将使用从初始提交到现在的所有历史记录"
+          else
+            # 过滤掉开发版本和当前版本
+            NON_DEV_TAGS=$(echo "$ALL_RELEASE_TAGS" | grep -v "\-dev" || echo "")
+            echo "非开发版本标签: $NON_DEV_TAGS"
+            
+            if [ -z "$NON_DEV_TAGS" ]; then
+              echo "没有找到正式版本标签"
+              FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+              RANGE="${FIRST_COMMIT}..HEAD"
+              PREVIOUS_VERSION="初始提交"
+              echo "将使用从初始提交到现在的所有历史记录"
+            else
+              # 过滤掉当前版本
+              OTHER_VERSIONS=$(echo "$NON_DEV_TAGS" | grep -v "v$RELEASE_VERSION" || echo "")
+              echo "其他版本(排除当前版本): $OTHER_VERSIONS"
+              
+              if [ -z "$OTHER_VERSIONS" ]; then
+                echo "除了当前版本外，没有找到其他正式版本标签"
+                FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+                RANGE="${FIRST_COMMIT}..HEAD"
+                PREVIOUS_VERSION="初始提交"
+                echo "将使用从初始提交到现在的所有历史记录"
+              else
+                # 排序并获取最新版本
+                PREVIOUS_VERSION=$(echo "$OTHER_VERSIONS" | tr ' ' '\n' | sort -V | tail -n 1)
+                echo "找到最近的版本标签: $PREVIOUS_VERSION"
+                
+                # 确认标签存在
+                if ! git rev-parse --verify "$PREVIOUS_VERSION" >/dev/null 2>&1; then
+                  echo "警告: 标签 $PREVIOUS_VERSION 似乎无效"
+                  FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+                  RANGE="${FIRST_COMMIT}..HEAD"
+                  PREVIOUS_VERSION="初始提交"
+                  echo "将使用从初始提交到现在的所有历史记录"
+                else
+                  RANGE="$PREVIOUS_VERSION..HEAD"
+                  echo "使用范围: $RANGE (从 $PREVIOUS_VERSION 到 HEAD)"
+                fi
+              fi
+            fi
+          fi
+          
+          # 验证range是否有效，获取提交数量
+          echo "验证范围内的提交..."
+          COMMIT_COUNT=$(git rev-list --count "$RANGE" || echo "0")
+          echo "范围 $RANGE 内有 $COMMIT_COUNT 个提交"
+          
+          if [ "$COMMIT_COUNT" -eq "0" ]; then
+            echo "警告: 范围内没有提交，可能会导致空的更新日志"
+            # 使用一个确保有提交的范围
+            FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+            RANGE="${FIRST_COMMIT}..HEAD"
+            echo "改用范围: $RANGE (从项目初始提交到现在)"
+          fi
+          
+          # 创建更新日志的标题
+          PREV_VERSION_TEXT="${PREVIOUS_VERSION:-初始版本}"
+          
+          # 创建临时更新日志文件
+          echo "# 版本 $RELEASE_VERSION 更新日志" > release-notes.md
+          echo "" >> release-notes.md
+          echo "## 变更摘要" >> release-notes.md
+          echo "" >> release-notes.md
+          echo "从 $PREV_VERSION_TEXT 更新到 v$RELEASE_VERSION" >> release-notes.md
+          echo "" >> release-notes.md
+          
+          # 按类型分组提交
+          echo "收集提交信息..."
+          FEATURES=$(git log "$RANGE" --pretty=format:"- %s" --grep="^feat" || echo "")
+          FIXES=$(git log "$RANGE" --pretty=format:"- %s" --grep="^fix" || echo "")
+          CHORES=$(git log "$RANGE" --pretty=format:"- %s" --grep="^chore" || echo "")
+          DOCS=$(git log "$RANGE" --pretty=format:"- %s" --grep="^docs" || echo "")
+          REFACTORS=$(git log "$RANGE" --pretty=format:"- %s" --grep="^refactor" || echo "")
+          TESTS=$(git log "$RANGE" --pretty=format:"- %s" --grep="^test" || echo "")
+          
+          # 添加新功能部分
+          if [ ! -z "$FEATURES" ]; then
+            echo "## 新功能" >> release-notes.md
+            echo "" >> release-notes.md
+            echo "$FEATURES" >> release-notes.md
+            echo "" >> release-notes.md
+          fi
+          
+          # 添加修复部分
+          if [ ! -z "$FIXES" ]; then
+            echo "## 修复" >> release-notes.md
+            echo "" >> release-notes.md
+            echo "$FIXES" >> release-notes.md
+            echo "" >> release-notes.md
+          fi
+          
+          # 添加文档部分
+          if [ ! -z "$DOCS" ]; then
+            echo "## 文档" >> release-notes.md
+            echo "" >> release-notes.md
+            echo "$DOCS" >> release-notes.md
+            echo "" >> release-notes.md
+          fi
+          
+          # 添加重构部分
+          if [ ! -z "$REFACTORS" ]; then
+            echo "## 重构" >> release-notes.md
+            echo "" >> release-notes.md
+            echo "$REFACTORS" >> release-notes.md
+            echo "" >> release-notes.md
+          fi
+          
+          # 添加测试部分
+          if [ ! -z "$TESTS" ]; then
+            echo "## 测试" >> release-notes.md
+            echo "" >> release-notes.md
+            echo "$TESTS" >> release-notes.md
+            echo "" >> release-notes.md
+          fi
+          
+          # 添加其他变更 - 使用更安全的方式
+          echo "收集其他提交..."
+          OTHER_COMMITS=$(git log "$RANGE" --pretty=format:"- %s" | grep -v "^feat\|^fix\|^chore\|^docs\|^refactor\|^test" || echo "")
+          
+          if [ ! -z "$OTHER_COMMITS" ]; then
+            echo "## 其他变更" >> release-notes.md
+            echo "" >> release-notes.md
+            echo "$OTHER_COMMITS" >> release-notes.md
+            echo "" >> release-notes.md
+          fi
+          
+          echo "release_notes_file=release-notes.md" >> $GITHUB_OUTPUT
+          
+          # 显示生成的更新日志
+          echo "生成的更新日志:"
+          cat release-notes.md
+          set +x  # 关闭调试模式
+
+      - name: Build Python package
+        run: |
+          python -m build
+          ls -l dist/
+          
+      - name: Checkout main branch
+        run: git checkout main
+        
+      - name: Handle version in main branch
+        shell: bash
+        run: |
+          # 保存release分支的版本号
+          RELEASE_VERSION="${{ steps.prepare-release.outputs.release_version }}"
+          
+          # 检查是否已经有这个版本
+          if grep -q "version = \"$RELEASE_VERSION\"" pyproject.toml; then
+            echo "main分支已经更新到版本 $RELEASE_VERSION，无需修改"
+          else
+            # 更新main分支上的pyproject.toml版本号
+            python -c "import toml; data = toml.load('pyproject.toml'); data['project']['version'] = '$RELEASE_VERSION'; open('pyproject.toml', 'w').write(toml.dumps(data))"
+            
+            # 提交更改
+            git add pyproject.toml
+            git commit -m "chore: update version to $RELEASE_VERSION"
+          fi
+          
+      - name: Merge release branch
+        shell: bash
+        run: |
+          # 保存正式版本号
+          RELEASE_VERSION="${{ steps.prepare-release.outputs.release_version }}"
+          
+          # 尝试合并
+          if ! git merge --no-ff release/${{ github.event.inputs.devTag }} -m "Release version $RELEASE_VERSION"; then
+            echo "合并冲突，尝试自动解决..."
+            
+            # 检查是否有pyproject.toml冲突
+            if git status | grep -q "pyproject.toml"; then
+              echo "检测到pyproject.toml存在冲突，使用release分支的内容但保持正式版本号..."
+              
+              # 放弃当前的合并
+              git merge --abort
+              
+              # 先检出release分支的pyproject.toml
+              git checkout release/${{ github.event.inputs.devTag }} -- pyproject.toml
+              
+              # 确保版本号是正式版本号
+              python -c "import toml; data = toml.load('pyproject.toml'); data['project']['version'] = '$RELEASE_VERSION'; open('pyproject.toml', 'w').write(toml.dumps(data))"
+              
+              # 添加修改后的文件
+              git add pyproject.toml
+              git commit -m "chore: 采用release分支的pyproject.toml，版本号设为 $RELEASE_VERSION"
+              
+              # 现在尝试合并，但使用我们的策略
+              echo "重新尝试合并..."
+              if ! git merge --no-ff --strategy-option=ours -X theirs release/${{ github.event.inputs.devTag }} -m "Release version $RELEASE_VERSION"; then
+                echo "合并仍然失败，可能存在其他冲突..."
+                git status
+                exit 1
+              fi
+            else
+              echo "存在其他文件的合并冲突，无法自动解决"
+              git status
+              exit 1
+            fi
+          fi
+          
+      - name: Push changes to main
+        run: git push origin main
+        
+      - name: Create release tag on main
+        shell: bash
+        run: |
+          # 获取正式版本号
+          RELEASE_VERSION="${{ steps.prepare-release.outputs.release_version }}"
+          
+          # 检查标签是否已存在（本地和远程）
+          if git rev-parse "v$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo "警告：标签 v$RELEASE_VERSION 已经存在于本地，跳过创建"
+          else
+            if git ls-remote --tags origin | grep -q "refs/tags/v$RELEASE_VERSION"; then
+              echo "警告：标签 v$RELEASE_VERSION 已经存在于远程，跳过创建"
+            else
+              # 创建版本标签（只有在本地和远程都不存在时）
+              git tag v$RELEASE_VERSION
+              echo "已在main分支上创建标签 v$RELEASE_VERSION"
+            fi
+          fi
+      
+      - name: Push release tag
+        shell: bash
+        run: |
+          # 获取正式版本号
+          RELEASE_VERSION="${{ steps.prepare-release.outputs.release_version }}"
+          
+          # 检查标签是否存在于远程
+          if git ls-remote --tags origin | grep -q "refs/tags/v$RELEASE_VERSION"; then
+            echo "标签 v$RELEASE_VERSION 已存在于远程，跳过推送"
+          else
+            # 检查标签是否存在于本地
+            if git rev-parse "v$RELEASE_VERSION" >/dev/null 2>&1; then
+              echo "推送标签 v$RELEASE_VERSION 到远程"
+              git push origin v$RELEASE_VERSION
+            else
+              echo "警告：本地没有标签 v$RELEASE_VERSION，无法推送"
+            fi
+          fi
+          
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.prepare-release.outputs.release_version }}
+          name: Version ${{ steps.prepare-release.outputs.release_version }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Update dev branch
+        shell: bash
+        run: |
+          # 检出dev分支
+          git fetch origin
+          git checkout dev || git checkout -b dev
+          
+          # 合并main分支到dev分支
+          git merge main --no-edit
+          
+          # 运行版本更新脚本生成新的开发版本号
+          python .github/scripts/update_dev_version.py
+          
+          # 提交新的开发版本号
+          git add pyproject.toml
+          git commit -m "chore: 基于版本 ${{ steps.prepare-release.outputs.release_version }} 更新开发版本号"
+          
+          # 推送更新的dev分支
+          git push origin dev
+          
+          # 显示新的版本号
+          echo "已更新dev分支版本号:"
+          python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])"
+          
+      - name: Clean up
+        run: |
+          git branch -D release/${{ github.event.inputs.devTag }}
