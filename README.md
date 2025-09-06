@@ -23,7 +23,7 @@ Movie Crawler 是一个Python应用程序，用于从电影天堂网站(DYTT8)�
 1. 克隆仓库：
 
 ```bash
-git clone https://github.com/yourusername/movie_crawler.git
+git clone https://github.com/titc/movie_crawler.git
 cd movie_crawler
 ```
 
@@ -142,7 +142,7 @@ movie_crawler/
 
 ## 更新记录
 
-### 1.0.0 (2024-04-xx)
+### 0.0.1 (2025-09-06)
 - 项目重构，改进代码结构和模块化
 - 增加了模块化设计，使用包层次结构
 - 明确的职责分离：核心、爬虫、检查、下载、重命名和工具模块
@@ -154,4 +154,4 @@ movie_crawler/
 
 ## 许可证
 
-此项目采用MIT许可证 - 详情请参阅LICENSE文件。
+此项目采用AGPL-3.0许可证 - 详情请参阅LICENSE文件。
