@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "movie-crawler"
+version = "1.0.0"
+description = "A Python application for scraping movie information from DYTT8 and downloading movies"
+authors = [
+    {name = "Movie Crawler Development Team", email = "yh.tao@outlook.com"}
+]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.7"
+dynamic = ["dependencies"]
+keywords = ["movie", "crawler", "scraper", "downloader", "aria2"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Archiving",
+]
+
+[project.urls]
+Homepage = "https://github.com/titc/movie_crawler"
+Repository = "https://github.com/titc/movie_crawler"
+Issues = "https://github.com/titc/movie_crawler/issues"
+
+[project.scripts]
+movie-crawler = "movie_crawler.__main__:main"
+
+[project.entry-points."console_scripts"]
+movie-crawler = "movie_crawler.__main__:main"
+
+[tool.setuptools.dynamic.dependencies]
+file = ["requirements.txt"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["movie_crawler*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+movie_crawler = ["py.typed"]
+
