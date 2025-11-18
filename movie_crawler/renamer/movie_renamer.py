@@ -9,7 +9,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from openai import OpenAI
-
+import traceback
 from movie_crawler.config.paths import MOVIES_DIRECTORY, DOWNLOAD_PATH, TV_SHOWS_DIRECTORY
 from movie_crawler.config.services import OPENAI_API_KEY, OPENAI_BASE_URL
 from movie_crawler.config.services import OPENAI_MODEL
@@ -131,11 +131,12 @@ class MovieRenamer:
 
             # Move and rename the file
             os.rename(original_path, new_path)
+            print(f"Renaming: {original_path} -> {new_path}")  # For testing without actual renaming
 
             return original_path, new_path, True
 
         except Exception as e:
-            self.logger.error(f"Error processing file {filename}: {e}")
+            self.logger.error(f"Error processing file {filename}: {traceback.format_exc()}")
             return original_path, None, False
 
     def rename_movies_concurrently(self, max_workers=RENAME_MAX_WORKERS):
@@ -152,6 +153,9 @@ class MovieRenamer:
         files_to_process = []
         for root, _, files in os.walk(self.source_dir):
             for file in files:
+                # 如果路径中包含 云盘缓存文件 则跳过
+                if "云盘缓存文件" in root:
+                    continue
                 if (any(file.lower().endswith(ext) for ext in VIDEO_EXTENSIONS) or
                         any(file.lower().endswith(ext) for ext in SUBTITLE_EXTENSIONS)):
                     files_to_process.append((file, root))

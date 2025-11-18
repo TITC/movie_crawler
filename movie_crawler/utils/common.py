@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from difflib import SequenceMatcher
 from movie_crawler.config.network import (
-    PROXY, USER_AGENTS, REQUEST_TIMEOUT
+    PROXY, USE_PROXY, USER_AGENTS, REQUEST_TIMEOUT
 )
 
 from movie_crawler.config.paths import LOGS_DIR
@@ -60,13 +60,12 @@ def configure_proxy():
     urllib.request.install_opener(opener)
 
 
-def fetch_url_with_retry(url, use_proxy=True):
+def fetch_url_with_retry(url):
     """
     Fetch URL content with retry logic and exponential backoff.
 
     Args:
         url (str): URL to fetch
-        use_proxy (bool): Whether to use proxy
 
     Returns:
         str: HTML content
@@ -76,7 +75,7 @@ def fetch_url_with_retry(url, use_proxy=True):
     """
     ssl._create_default_https_context = ssl._create_unverified_context
 
-    if use_proxy:
+    if USE_PROXY:
         configure_proxy()
 
     headers = {'User-Agent': get_random_user_agent()}
