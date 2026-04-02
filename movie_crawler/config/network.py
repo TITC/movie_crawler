@@ -7,7 +7,7 @@ PROXY = {
     'http': 'http://127.0.0.1:7890',
     'https': 'http://127.0.0.1:7890'
 }
-USE_PROXY = True  # 是否使用代理
+USE_PROXY = False  # 是否使用代理
 
 # List of user agents for rotating headers
 USER_AGENTS = [
