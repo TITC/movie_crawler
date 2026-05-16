@@ -1,12 +1,12 @@
 # Movie Crawler
 
-Movie Crawler 是一个Python应用程序，用于从电影天堂网站(DYTT8)爬取电影信息并下载电影资源。该应用程序还可以检查本地视频文件的完整性，并为损坏的文件找到替代下载链接。
+Movie Crawler 是一个 Python 应用程序，用于从磁力熊 ([cilixiong.org](https://www.cilixiong.org/movie/index.html)) 爬取电影信息（含磁力链接与豆瓣元数据）并入库；可选接入 Aria2 下载本地资源。使用前请遵守目标站点服务条款与当地法律法规。
 
 ## 功能特点
 
-- 爬取电影天堂网站的电影信息
+- 爬取 cilixiong.org「电影」列表与详情页的磁力链接
 - 将电影信息存储到SQLite数据库中
-- 使用Aria2下载电影（支持磁力链接、FTP和迅雷链接）
+- 使用Aria2下载电影（支持磁力链接）
 - 检查电影文件完整性
 - 使用AI模型匹配损坏的电影文件并找到替代下载链接
 - 使用AI模型批量重命名电影和电视剧文件
@@ -54,10 +54,10 @@ python -m movie_crawler init
 ### 爬取电影信息
 
 ```bash
-# 默认爬取所有页面(1-428)
+# 不写 --end-page 时默认根据第 1 页分页控件自动推断尾页（若失败可手动指定）
 python -m movie_crawler scrape
 
-# 指定页面范围
+# 手动指定列表页范围（与站内 /movie/index.html、/movie/index_2.html 一致）
 python -m movie_crawler scrape --start-page 1 --end-page 10
 
 # 爬取并立即下载电影
