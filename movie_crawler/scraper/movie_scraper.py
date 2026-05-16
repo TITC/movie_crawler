@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from bs4 import BeautifulSoup
 
 from movie_crawler.config.paths import DOWNLOAD_PATH
-from movie_crawler.config.scraper import movie_list_page_url, REQUEST_GAP_SECONDS
+from movie_crawler.config.scraper import REQUEST_GAP_SECONDS, movie_list_page_url
 from movie_crawler.downloader.aria2 import add_magnet_link_to_aria2
 from movie_crawler.utils.common import fetch_url_with_retry
 from movie_crawler.utils.database import (
@@ -33,10 +33,10 @@ def _element_has_card_class(classes) -> bool:
     return 'card' in tokens
 
 
-def _request_gap() -> None:
-    """Pace outbound requests; see config.scraper.REQUEST_GAP_SECONDS."""
-    if REQUEST_GAP_SECONDS and REQUEST_GAP_SECONDS > 0:
-        time.sleep(REQUEST_GAP_SECONDS)
+def _sleep_after_response(gap_seconds: float) -> None:
+    """Pace outbound requests after a successful HTTP response."""
+    if gap_seconds and gap_seconds > 0:
+        time.sleep(gap_seconds)
 
 
 _MOVIE_DETAIL_PATH_RE = re.compile(r'/movie/\d+\.html$', re.IGNORECASE)
@@ -124,11 +124,12 @@ def _subtitle_and_resolution_from_label(label: str) -> Tuple[str, str]:
     return subtitle, resolution
 
 
-def detect_last_movie_list_page() -> int:
+def detect_last_movie_list_page(gap_seconds: Optional[float] = None) -> int:
     """Parse list page 1 pagination and return highest index_* page number."""
+    gap = REQUEST_GAP_SECONDS if gap_seconds is None else gap_seconds
     base_url = movie_list_page_url(1)
     html = fetch_url_with_retry(base_url)
-    _request_gap()
+    _sleep_after_response(gap)
     soup = BeautifulSoup(html, 'html.parser')
     numbers: list[int] = []
     for a in soup.find_all('a', href=True):
@@ -243,22 +244,38 @@ def _pick_largest_magnet(candidates: List[Tuple[str, str]]) -> Tuple[str, str]:
 class MovieScraper:
     """Scraper for cilixiong.org movie list and detail pages."""
 
-    def __init__(self, start_page=1, end_page=None, download_movies=False):
+    def __init__(
+        self,
+        start_page=1,
+        end_page=None,
+        download_movies=False,
+        request_gap_seconds=None,
+    ):
         """
         Args:
             start_page (int): First list page index.
             end_page (Optional[int]): Last page; if None, resolved at run() via detect_last_movie_list_page().
             download_movies (bool): Queue magnets in Aria2 when True.
+            request_gap_seconds (Optional[float]): Seconds to sleep after each successful HTTP fetch;
+                None uses config scraper.REQUEST_GAP_SECONDS (set to 0 to disable pacing).
         """
         self.start_page = start_page
         self.end_page = end_page
         self.download_movies = download_movies
+        self.request_gap_seconds = (
+            REQUEST_GAP_SECONDS if request_gap_seconds is None else float(request_gap_seconds)
+        )
         self.logger = logging.getLogger(__name__)
-        if REQUEST_GAP_SECONDS and REQUEST_GAP_SECONDS > 0:
+        if self.request_gap_seconds > 0:
             self.logger.info(
-                'Pacing: sleeping %.2fs after each HTTP response (see REQUEST_GAP_SECONDS in config/scraper.py)',
-                REQUEST_GAP_SECONDS,
+                'Pacing: sleeping %.2fs after each HTTP response (--request-gap overrides config/scraper.REQUEST_GAP_SECONDS)',
+                self.request_gap_seconds,
             )
+        elif request_gap_seconds is not None and self.request_gap_seconds <= 0:
+            self.logger.info('Pacing: disabled (--request-gap 0 or non-positive)')
+
+    def _request_gap(self) -> None:
+        _sleep_after_response(self.request_gap_seconds)
 
     def extract_movie_info(self, html: str, movie_url: str) -> Optional[Dict]:
         """
@@ -294,7 +311,7 @@ class MovieScraper:
 
         try:
             html = fetch_url_with_retry(url)
-            _request_gap()
+            self._request_gap()
             soup = BeautifulSoup(html, 'html.parser')
 
             seen_urls = set()
@@ -343,7 +360,7 @@ class MovieScraper:
 
         try:
             html = fetch_url_with_retry(movie_url)
-            _request_gap()
+            self._request_gap()
             info = self.extract_movie_info(html, movie_url)
 
             if not info:
@@ -403,7 +420,7 @@ class MovieScraper:
         end = self.end_page
         if end is None:
             self.logger.info("Detecting last list page from page 1…")
-            end = detect_last_movie_list_page()
+            end = detect_last_movie_list_page(self.request_gap_seconds)
             self.logger.info(f"Using last page: {end}")
         self.end_page = end
 

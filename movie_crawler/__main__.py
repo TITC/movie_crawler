@@ -30,6 +30,16 @@ def parse_args():
         help='Ending page index; omit to detect from pagination on page 1',
     )
     scraper_parser.add_argument('--download', action='store_true', help='Download movies immediately')
+    scraper_parser.add_argument(
+        '--request-gap',
+        type=float,
+        default=None,
+        metavar='SEC',
+        help=(
+            'Seconds to sleep after each successful HTTP fetch (detail/list page); '
+            'omit to use config scraper.REQUEST_GAP_SECONDS; 0 disables pacing'
+        ),
+    )
 
     # Check command
     check_parser = subparsers.add_parser('check', help='Check video file integrity')
@@ -79,7 +89,8 @@ def command_scrape(args):
     scraper = MovieScraper(
         start_page=args.start_page,
         end_page=args.end_page,
-        download_movies=args.download
+        download_movies=args.download,
+        request_gap_seconds=args.request_gap,
     )
     scraper.run()
 
