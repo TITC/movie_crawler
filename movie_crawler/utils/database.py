@@ -5,6 +5,17 @@ import sqlite3
 from contextlib import contextmanager
 from movie_crawler.config.paths import DB_PATH
 
+_NEW_MOVIE_COLUMNS = (
+    ('douban_rating', 'TEXT'),
+    ('aka', 'TEXT'),
+    ('release_date', 'TEXT'),
+    ('genres', 'TEXT'),
+    ('runtime_minutes', 'TEXT'),
+    ('region', 'TEXT'),
+    ('starring', 'TEXT'),
+    ('updated_at_site', 'TEXT'),
+)
+
 
 @contextmanager
 def get_db_connection():
@@ -14,6 +25,15 @@ def get_db_connection():
         yield conn
     finally:
         conn.close()
+
+
+def _migrate_movie_columns(cursor):
+    """Add cilixiong detail columns when missing."""
+    cursor.execute('PRAGMA table_info(movie)')
+    existing = {row[1] for row in cursor.fetchall()}
+    for col_name, col_type in _NEW_MOVIE_COLUMNS:
+        if col_name not in existing:
+            cursor.execute(f'ALTER TABLE movie ADD COLUMN {col_name} {col_type}')
 
 
 def initialize_database():
@@ -31,19 +51,28 @@ def initialize_database():
                 added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        _migrate_movie_columns(cursor)
         conn.commit()
 
 
-def add_movie_to_database(name, link, year, subtitle, resolution):
+def add_movie_to_database(
+    name,
+    link,
+    year,
+    subtitle,
+    resolution,
+    *,
+    douban_rating=None,
+    aka=None,
+    release_date=None,
+    genres=None,
+    runtime_minutes=None,
+    region=None,
+    starring=None,
+    updated_at_site=None,
+):
     """
     Add a movie to the database.
-
-    Args:
-        name (str): Movie name
-        link (str): Download link
-        year (str): Release year
-        subtitle (str): Subtitle information
-        resolution (str): Video resolution
 
     Returns:
         int or None: Database ID of the movie if successful, None otherwise
@@ -52,23 +81,39 @@ def add_movie_to_database(name, link, year, subtitle, resolution):
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "INSERT INTO movie (name, link, year, subtitle, resolution) VALUES (?, ?, ?, ?, ?)",
-                (name, link, year, subtitle, resolution)
+                """
+                INSERT INTO movie (
+                    name, link, year, subtitle, resolution,
+                    douban_rating, aka, release_date, genres, runtime_minutes,
+                    region, starring, updated_at_site
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    link,
+                    year,
+                    subtitle,
+                    resolution,
+                    douban_rating,
+                    aka,
+                    release_date,
+                    genres,
+                    runtime_minutes,
+                    region,
+                    starring,
+                    updated_at_site,
+                ),
             )
             conn.commit()
             return cursor.lastrowid
         except sqlite3.IntegrityError:
-            # Link already exists in the database
             return None
 
 
 def check_movie_id(name, year):
     """
     Check if a movie exists in the database by name and year.
-
-    Args:
-        name (str): Movie name
-        year (str): Release year
 
     Returns:
         int or None: Database ID if the movie exists, None otherwise
@@ -84,15 +129,18 @@ def find_movie_by_link(link):
     """
     Find a movie in the database by link.
 
-    Args:
-        link (str): Download link
-
     Returns:
         tuple or None: Movie data if found, None otherwise
     """
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, year, subtitle, resolution FROM movie WHERE link = ?", (link,))
+        cursor.execute(
+            """SELECT id, name, year, subtitle, resolution,
+                   douban_rating, aka, release_date, genres, runtime_minutes,
+                   region, starring, updated_at_site
+               FROM movie WHERE link = ?""",
+            (link,),
+        )
         return cursor.fetchone()
 
 
@@ -101,11 +149,17 @@ def get_all_movies():
     Get all movies from the database.
 
     Returns:
-        list: List of tuples containing movie data
+        list: Rows (id, name, link, year, subtitle, resolution,
+              douban_rating, aka, ...)
     """
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, link, year, subtitle, resolution FROM movie")
+        cursor.execute(
+            """SELECT id, name, link, year, subtitle, resolution,
+                      douban_rating, aka, release_date, genres, runtime_minutes,
+                      region, starring, updated_at_site
+               FROM movie"""
+        )
         return cursor.fetchall()
 
 

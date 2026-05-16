@@ -19,9 +19,16 @@ def parse_args():
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
 
     # Scraper command
-    scraper_parser = subparsers.add_parser('scrape', help='Scrape movies from DYTT8')
+    scraper_parser = subparsers.add_parser(
+        'scrape', help='Scrape movies from cilixiong.org（磁力熊）'
+    )
     scraper_parser.add_argument('--start-page', type=int, default=1, help='Starting page number')
-    scraper_parser.add_argument('--end-page', type=int, default=428, help='Ending page number')
+    scraper_parser.add_argument(
+        '--end-page',
+        type=int,
+        default=None,
+        help='Ending page index; omit to detect from pagination on page 1',
+    )
     scraper_parser.add_argument('--download', action='store_true', help='Download movies immediately')
 
     # Check command
@@ -64,7 +71,10 @@ def parse_args():
 def command_scrape(args):
     """Run the movie scraper."""
     logger = logging.getLogger(__name__)
-    logger.info(f"Starting scraper from page {args.start_page} to {args.end_page}")
+    if args.end_page is None:
+        logger.info(f"Starting scraper from page {args.start_page}; end page will be auto-detected")
+    else:
+        logger.info(f"Starting scraper from page {args.start_page} to {args.end_page}")
 
     scraper = MovieScraper(
         start_page=args.start_page,
@@ -124,11 +134,33 @@ def command_list(args):
         logger.info(f"Listed {len(links)} movie links")
     else:
         movies = get_all_movies()
-        print(f"{'ID':<5} {'Name':<30} {'Year':<6} {'Subtitle':<15} {'Resolution':<15}")
-        print("-" * 80)
+        hdr = (
+            f"{'ID':<5} {'Name':<26} {'Year':<6} {'豆瓣':<6} {'Subtitle':<12} {'Resolution':<10}"
+        )
+        print(hdr)
+        print("-" * len(hdr))
         for movie in movies:
-            movie_id, name, link, year, subtitle, resolution = movie
-            print(f"{movie_id:<5} {name[:30]:<30} {year:<6} {subtitle:<15} {resolution:<15}")
+            (
+                movie_id,
+                name,
+                link,
+                year,
+                subtitle,
+                resolution,
+                douban_rating,
+                aka,
+                release_date,
+                genres,
+                runtime_minutes,
+                region,
+                starring,
+                updated_at_site,
+            ) = movie
+            db = douban_rating or '-'
+            print(
+                f"{movie_id:<5} {name[:26]:<26} {year[:6]:<6} {str(db)[:6]:<6} "
+                f"{str(subtitle)[:12]:<12} {str(resolution)[:10]:<10}"
+            )
         logger.info(f"Listed {len(movies)} movies from database")
 
 

@@ -2,6 +2,7 @@
 Common utility functions for the movie crawler application.
 """
 import os
+import re
 import random
 import logging
 import time
@@ -17,7 +18,12 @@ from movie_crawler.config.network import (
 )
 
 from movie_crawler.config.paths import LOGS_DIR
-from movie_crawler.config.scraper import MAX_RETRIES, BACKOFF_FACTOR
+from movie_crawler.config.scraper import (
+    MAX_RETRIES,
+    BACKOFF_FACTOR,
+    HTTP_COOLDOWN_STATUSES,
+    HTTP_COOLDOWN_EXTRA_SECONDS,
+)
 
 
 def setup_logging():
@@ -86,20 +92,39 @@ def fetch_url_with_retry(url):
             response = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
             html = response.read()
 
-            # Detect encoding and decode
+            # Prefer charset from <meta http-equiv> / HTML5 meta（部分站点为 gb2312）
+            charset = None
+            head = html[:24000]
+            m = re.search(br'charset\s*=\s*([\w-]+)', head, re.I)
+            if m:
+                charset = m.group(1).decode('ascii', errors='ignore').lower()
+                if charset in ('gb2312', 'gbk'):
+                    charset = 'gb18030'
+
+            if charset:
+                try:
+                    return html.decode(charset)
+                except (UnicodeDecodeError, LookupError):
+                    pass
+
             encoding = chardet.detect(html)['encoding']
             try:
                 return html.decode(encoding)
-            except UnicodeDecodeError:
+            except (UnicodeDecodeError, TypeError, LookupError):
                 try:
-                    return html.decode('GBK')
+                    return html.decode('gb18030')
                 except UnicodeDecodeError:
-                    return html.decode('UTF-8', errors='ignore')
+                    try:
+                        return html.decode('GBK')
+                    except UnicodeDecodeError:
+                        return html.decode('UTF-8', errors='ignore')
 
         except (URLError, HTTPError) as e:
             logging.warning(f"Attempt {i+1}/{MAX_RETRIES} failed: {e}")
             if i < MAX_RETRIES - 1:
                 sleep_time = BACKOFF_FACTOR * (2 ** i)  # Exponential backoff
+                if isinstance(e, HTTPError) and e.code in HTTP_COOLDOWN_STATUSES:
+                    sleep_time += HTTP_COOLDOWN_EXTRA_SECONDS
                 logging.info(f"Retrying in {sleep_time} seconds...")
                 time.sleep(sleep_time)
             else:

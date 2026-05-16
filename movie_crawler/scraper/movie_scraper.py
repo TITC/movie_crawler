@@ -1,166 +1,335 @@
 """
-Movie scraper for downloading movie information from DYTT8.
+Movie scraper for 磁力熊 cilixiong.org.
 """
-import re
-import urllib.parse
-from bs4 import BeautifulSoup
-import logging
-from pathlib import Path
+from __future__ import annotations
 
+import html as html_stdlib
+import logging
+import re
+import time
+import urllib.parse
+from typing import Dict, List, Optional, Tuple, Union
+
+from bs4 import BeautifulSoup
 
 from movie_crawler.config.paths import DOWNLOAD_PATH
-from movie_crawler.config.scraper import MOVIE_LIST_URL_TEMPLATE
-from movie_crawler.utils.common import fetch_url_with_retry
-from movie_crawler.utils.database import add_movie_to_database, check_movie_id, initialize_database
+from movie_crawler.config.scraper import movie_list_page_url, REQUEST_GAP_SECONDS
 from movie_crawler.downloader.aria2 import add_magnet_link_to_aria2
+from movie_crawler.utils.common import fetch_url_with_retry
+from movie_crawler.utils.database import (
+    add_movie_to_database,
+    check_movie_id,
+    initialize_database,
+)
+
+def _element_has_card_class(classes) -> bool:
+    """True if Bootstrap 'card' is present (BeautifulSoup gives str or list)."""
+    if not classes:
+        return False
+    if isinstance(classes, str):
+        tokens = classes.split()
+    else:
+        tokens = list(classes)
+    return 'card' in tokens
+
+
+def _request_gap() -> None:
+    """Pace outbound requests; see config.scraper.REQUEST_GAP_SECONDS."""
+    if REQUEST_GAP_SECONDS and REQUEST_GAP_SECONDS > 0:
+        time.sleep(REQUEST_GAP_SECONDS)
+
+
+_MOVIE_DETAIL_PATH_RE = re.compile(r'/movie/\d+\.html$', re.IGNORECASE)
+_INDEX_PAGE_PATH_RE = re.compile(r'/movie/index_(\d+)\.html$', re.IGNORECASE)
+_JIANPIAN_PATH_RE = re.compile(r'(?:^|[?&])path=([^&]+)', re.IGNORECASE)
+
+# Sizes in torrent labels: [2.8G], 1.05 GiB, 820 MB
+_LOOSE_SIZE = re.compile(
+    r'(\d+(?:\.\d+)?)\s*(tib|tb|ti|gib|gb|gi|go|mb|mi|mib|m)\b',
+    re.IGNORECASE,
+)
+_RES_HINT = re.compile(r'\b(2160p|4320p|4k|[0-9]+p)\b', re.I)
+_SUBTITLE_PATTERNS = [
+    ('中英双字', '中英双字'),
+    ('中英字幕', '中英字幕'),
+    ('国语中字', '国语中字'),
+    ('简体中字', '简体中字'),
+    ('中字', '中字'),
+]
+
+
+def _normalize_download_href(href: str) -> str:
+    if not href or not href.strip():
+        return ''
+    raw = html_stdlib.unescape(href.strip())
+    low = raw.lower()
+
+    if low.startswith('magnet:'):
+        return raw
+    if low.startswith('ftp://'):
+        return raw.split('&')[0]
+    if low.startswith('thunder://'):
+        return raw
+
+    if low.startswith('jianpian://'):
+        m = _JIANPIAN_PATH_RE.search(raw)
+        if m:
+            inner = urllib.parse.unquote(m.group(1))
+            il = inner.lower()
+            if il.startswith(('ftp://', 'magnet:', 'thunder://')):
+                return inner
+
+    if 'magnet:' in low:
+        i = low.index('magnet:')
+        return raw[i:]
+    if 'ftp://' in low:
+        i = low.index('ftp://')
+        return raw[i:].split('&')[0]
+
+    return ''
+
+
+def _torrent_label_size_gb(label: str) -> Optional[float]:
+    """Parse a crude size in GB from anchor / release title text."""
+    vals: list[float] = []
+    for m in _LOOSE_SIZE.finditer(label):
+        try:
+            n = float(m.group(1))
+        except ValueError:
+            continue
+        u = m.group(2).lower()
+        if u in ('tib', 'tb'):
+            vals.append(n * 1024)
+        elif u in ('gib', 'gb', 'gi', 'go'):
+            vals.append(n)
+        elif u in ('mib', 'mb', 'mi', 'm'):
+            vals.append(n / 1024)
+        else:
+            vals.append(n)
+    if not vals:
+        return None
+    return max(vals)
+
+
+def _subtitle_and_resolution_from_label(label: str) -> Tuple[str, str]:
+    subtitle = '未知字幕'
+    resolution = '未知分辨率'
+    for pat, val in _SUBTITLE_PATTERNS:
+        if pat in label:
+            subtitle = val
+            break
+    rm = _RES_HINT.search(label)
+    if rm:
+        resolution = rm.group(1).upper() if rm.group(1).upper() != '4K' else '4K'
+    return subtitle, resolution
+
+
+def detect_last_movie_list_page() -> int:
+    """Parse list page 1 pagination and return highest index_* page number."""
+    base_url = movie_list_page_url(1)
+    html = fetch_url_with_retry(base_url)
+    _request_gap()
+    soup = BeautifulSoup(html, 'html.parser')
+    numbers: list[int] = []
+    for a in soup.find_all('a', href=True):
+        full = urllib.parse.urljoin(base_url, a['href'])
+        path = urllib.parse.urlparse(full).path
+        m = _INDEX_PAGE_PATH_RE.search(path)
+        if m:
+            numbers.append(int(m.group(1)))
+    return max(numbers) if numbers else 1
+
+
+def _parse_mv_detail(soup: BeautifulSoup) -> Dict[str, Union[str, None]]:
+    out = {
+        'name': '',
+        'year': '',
+        'douban_rating': None,
+        'aka': None,
+        'release_date': None,
+        'genres': None,
+        'runtime_minutes': None,
+        'region': None,
+        'starring': None,
+        'updated_at_site': None,
+    }
+    detail = soup.find('div', class_='mv_detail')
+    if detail:
+        h1 = detail.find('h1')
+        if h1:
+            out['name'] = h1.get_text(strip=True)
+
+        rank_el = detail.find('span', class_='db_rank')
+        if rank_el:
+            out['douban_rating'] = rank_el.get_text(strip=True)
+
+        for p in detail.find_all('p'):
+            raw = p.get_text(' ', strip=True)
+            if not raw:
+                continue
+            if raw.startswith('又名') and '：' in raw:
+                out['aka'] = raw.split('：', 1)[1].strip()
+            elif raw.startswith('上映日期') and '：' in raw:
+                dt = raw.split('：', 1)[1].strip()
+                out['release_date'] = dt
+                ym = re.search(r'(19|20)\d{2}', dt)
+                if ym:
+                    out['year'] = ym.group(0)
+            elif raw.startswith('类型') and '：' in raw:
+                g = raw.split('：', 1)[1].strip()
+                out['genres'] = g.replace('|', ' ').strip()
+            elif raw.startswith('片长') and '：' in raw:
+                lm = re.search(r'(\d+)', raw.split('：', 1)[1])
+                out['runtime_minutes'] = lm.group(1) if lm else None
+            elif raw.startswith('上映地区') and '：' in raw:
+                out['region'] = raw.split('：', 1)[1].strip()
+            elif raw.startswith('主演') and '：' in raw:
+                out['starring'] = raw.split('：', 1)[1].strip()
+            elif raw.startswith('最后更新') and '：' in raw:
+                out['updated_at_site'] = raw.split('：', 1)[1].strip()
+
+    if not out['name']:
+        title_tag = soup.find('title')
+        if title_tag:
+            title_text = title_tag.get_text(strip=True)
+            out['name'] = re.split(r'[-_/|]', title_text, 1)[0].strip()
+
+    if not out['year']:
+        ym = re.search(r'(19|20)\d{2}', soup.get_text('\n', strip=True))
+        if ym:
+            out['year'] = ym.group(0)
+
+    return out
+
+
+def _gather_magnet_anchors(soup: BeautifulSoup) -> List[Tuple[str, str]]:
+    block = soup.find('div', class_='mv_down')
+    roots = [block] if block else []
+    roots.append(soup)
+    seen = set()
+    out: List[Tuple[str, str]] = []
+    for root in roots:
+        if root is None:
+            continue
+        for tag in root.find_all('a', href=True):
+            magnet = _normalize_download_href(tag.get('href') or '')
+            if not magnet.lower().startswith('magnet:'):
+                continue
+            if magnet in seen:
+                continue
+            seen.add(magnet)
+            label = tag.get_text(' ', strip=True)
+            out.append((magnet, label))
+    return out
+
+
+def _pick_largest_magnet(candidates: List[Tuple[str, str]]) -> Tuple[str, str]:
+    if not candidates:
+        return '', ''
+    scored = []
+    for magnet, label in candidates:
+        sz = _torrent_label_size_gb(label)
+        scored.append((sz if sz is not None else -1.0, magnet, label))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if scored[0][0] < 0:
+        return candidates[0]
+    top = scored[0][0]
+    for s, magnet, label in scored:
+        if s == top:
+            return magnet, label
+    return candidates[0]
 
 
 class MovieScraper:
-    """Scraper for fetching movie information from DYTT8."""
+    """Scraper for cilixiong.org movie list and detail pages."""
 
-    def __init__(self, start_page=1, end_page=428, download_movies=False):
+    def __init__(self, start_page=1, end_page=None, download_movies=False):
         """
-        Initialize the movie scraper.
-
         Args:
-            start_page (int): Page to start scraping from
-            end_page (int): Page to end scraping at
-            download_movies (bool): Whether to download movies immediately
+            start_page (int): First list page index.
+            end_page (Optional[int]): Last page; if None, resolved at run() via detect_last_movie_list_page().
+            download_movies (bool): Queue magnets in Aria2 when True.
         """
         self.start_page = start_page
         self.end_page = end_page
         self.download_movies = download_movies
         self.logger = logging.getLogger(__name__)
+        if REQUEST_GAP_SECONDS and REQUEST_GAP_SECONDS > 0:
+            self.logger.info(
+                'Pacing: sleeping %.2fs after each HTTP response (see REQUEST_GAP_SECONDS in config/scraper.py)',
+                REQUEST_GAP_SECONDS,
+            )
 
-    def extract_movie_info(self, html, movie_url):
+    def extract_movie_info(self, html: str, movie_url: str) -> Optional[Dict]:
         """
-        Extract movie information from the movie detail page HTML.
-
-        Args:
-            html (str): HTML content of the movie detail page
-            movie_url (str): URL of the movie detail page
+        Extract movie dict from detail HTML.
 
         Returns:
-            tuple: (name, link, year, subtitle, resolution)
+            dict with keys: name, link, year, subtitle, resolution, douban_rating, aka,
+            release_date, genres, runtime_minutes, region, starring, updated_at_site,
+            or None if unusable.
         """
         soup = BeautifulSoup(html, 'html.parser')
+        meta = _parse_mv_detail(soup)
+        name = (meta['name'] or '').strip()
+        year = (meta['year'] or '').strip()
 
-        # Get the full title from the page
-        full_title = ""
-        divs = soup.find_all('div', class_='title_all')
-        for div in divs:
-            if div.h1:
-                full_title = div.h1.text
-                break
+        magnets = _gather_magnet_anchors(soup)
+        magnet, torrent_label = _pick_largest_magnet(magnets)
+        link = magnet
+        subtitle, resolution = _subtitle_and_resolution_from_label(torrent_label)
 
-        # If title not found in div, try header
-        if not full_title:
-            title_tag = soup.find('title')
-            if title_tag:
-                full_title = title_tag.text
-
-        # Extract movie name from title
-        name_match = re.search(r'《(.*?)》', full_title)
-        name = name_match.group(1) if name_match else "未知电影名称"
-
-        # Extract year from title
-        year_match = re.search(r'(\d{4})年', full_title)
-        year = year_match.group(1) if year_match else "未知年份"
-
-        # Extract subtitle and resolution information
-        subtitle_patterns = [
-            ('中英双字', '中英双字'),
-            ('中英字幕', '中英字幕'),
-            ('国语中字', '国语中字'),
-            ('BD', 'BD'),
-            ('HD', 'HD')
-        ]
-
-        resolution_patterns = [
-            ('1080P', '1080P'),
-            ('HD', 'HD'),
-            ('BD', 'BD')
-        ]
-
-        # Default values
-        subtitle = "未知字幕"
-        resolution = "未知分辨率"
-
-        # Find subtitle and resolution in title
-        for pattern, value in subtitle_patterns:
-            if re.search(pattern, full_title):
-                subtitle = value
-                break
-
-        for pattern, value in resolution_patterns:
-            if re.search(pattern, full_title):
-                resolution = value
-                break
-
-        # Find the download link
-        link = self._extract_download_link(soup)
-
-        return name, link, year, subtitle, resolution
-
-    def _extract_download_link(self, soup):
-        """
-        Extract download link from soup object.
-
-        Args:
-            soup (BeautifulSoup): Parsed HTML
-
-        Returns:
-            str: Download link or empty string if not found
-        """
-        # Check regular links first
-        for tag in soup.find_all('a'):
-            href = tag.get('href')
-            if href and (href.startswith('magnet') or href.startswith('ftp') or href.startswith('thunder')):
-                return href
-
-        # Check in zoom div if not found
-        zoom_div = soup.find('div', id='Zoom')
-        if zoom_div:
-            for tag in zoom_div.find_all('a'):
-                href = tag.get('href')
-                if href and (href.startswith('magnet') or href.startswith('ftp') or href.startswith('thunder')):
-                    return href
-
-        return ""
+        meta['subtitle'] = subtitle
+        meta['resolution'] = resolution
+        meta['link'] = link
+        if not name:
+            return None
+        if not link:
+            return None
+        return meta
 
     def scrape_movie_list_page(self, page_number):
-        """
-        Scrape a single movie list page.
-
-        Args:
-            page_number (int): Page number to scrape
-
-        Returns:
-            list: List of movie URLs to process
-        """
-        url = MOVIE_LIST_URL_TEMPLATE.format(page=page_number)
+        url = movie_list_page_url(page_number)
         self.logger.info(f"Scraping movie list page: {url}")
 
         try:
             html = fetch_url_with_retry(url)
+            _request_gap()
             soup = BeautifulSoup(html, 'html.parser')
 
-            # Find all movie links in the content area
-            content_div = soup.find('div', class_='co_content8')
-            if not content_div:
-                self.logger.warning(f"Content div not found on page {page_number}")
-                return []
-
+            seen_urls = set()
             movie_links = []
-            for a_tag in content_div.find_all('a'):
+
+            for card in soup.find_all('div', class_=_element_has_card_class):
+                a_tag = card.find('a', href=_MOVIE_DETAIL_PATH_RE)
+                if not a_tag or not a_tag.get('href'):
+                    inner = card.find('a', href=True)
+                    if inner:
+                        path = urllib.parse.urlparse(
+                            urllib.parse.urljoin(url, inner['href'])
+                        ).path
+                        if _MOVIE_DETAIL_PATH_RE.search(path):
+                            a_tag = inner
+                if not a_tag:
+                    continue
                 href = a_tag.get('href', '')
-                # Skip pagination links
-                if href.startswith('list'):
+                movie_url = urllib.parse.urljoin(url, href)
+                if movie_url in seen_urls:
+                    continue
+                path = urllib.parse.urlparse(movie_url).path
+                if not _MOVIE_DETAIL_PATH_RE.search(path):
                     continue
 
-                # Build absolute URL
-                movie_url = urllib.parse.urljoin(url, href)
-                movie_links.append((movie_url, a_tag.text))
+                card_body = card.find('div', class_='card-body')
+                title_el = card_body.find(('h2', 'h3', 'h4')) if card_body else None
+                title_text = ''
+                if title_el:
+                    title_text = title_el.get_text(strip=True)
+                if not title_text:
+                    title_text = a_tag.get_text(' ', strip=True)
+
+                seen_urls.add(movie_url)
+                movie_links.append((movie_url, title_text))
 
             self.logger.info(f"Found {len(movie_links)} movies on page {page_number}")
             return movie_links
@@ -169,29 +338,24 @@ class MovieScraper:
             self.logger.error(f"Failed to scrape page {page_number}: {e}", exc_info=True)
             return []
 
-    def process_movie(self, movie_url, movie_title):
-        """
-        Process a single movie page.
-
-        Args:
-            movie_url (str): URL of the movie detail page
-            movie_title (str): Title of the movie from the list page
-
-        Returns:
-            tuple: (success, movie_info)
-        """
+    def process_movie(self, movie_url: str, movie_title: str):
         self.logger.info(f"Processing movie: {movie_title} ({movie_url})")
 
         try:
             html = fetch_url_with_retry(movie_url)
-            name, link, year, subtitle, resolution = self.extract_movie_info(html, movie_url)
+            _request_gap()
+            info = self.extract_movie_info(html, movie_url)
 
-            # Skip if we couldn't get essential information
-            if name == "未知电影名称" or not link:
+            if not info:
                 self.logger.warning(f"Skipping movie with incomplete info: {movie_url}")
                 return False, None
 
-            # # Skip if movie already exists in database
+            name = info['name']
+            link = info['link']
+            year = info.get('year') or '未知年份'
+            subtitle = info['subtitle']
+            resolution = info['resolution']
+
             db_id = check_movie_id(name, year)
             self.logger.info(f"Checked database for movie: {name} ({year}), ID: {db_id}")
 
@@ -199,18 +363,32 @@ class MovieScraper:
                 self.logger.info(f"Movie already exists in database: {name} ({year})")
             else:
                 self.logger.info(f"Movie does not exist in database, adding: {name} ({year})")
-                db_id = add_movie_to_database(name, link, year, subtitle, resolution)
+                db_id = add_movie_to_database(
+                    name,
+                    link,
+                    year,
+                    subtitle,
+                    resolution,
+                    douban_rating=info.get('douban_rating'),
+                    aka=info.get('aka'),
+                    release_date=info.get('release_date'),
+                    genres=info.get('genres'),
+                    runtime_minutes=info.get('runtime_minutes'),
+                    region=info.get('region'),
+                    starring=info.get('starring'),
+                    updated_at_site=info.get('updated_at_site'),
+                )
             if self.download_movies and db_id:
                 self.logger.info(f"Adding movie to Aria2 for download: {name} ({year})")
                 add_magnet_link_to_aria2(link, db_id, name, year, DOWNLOAD_PATH)
 
             movie_info = {
-                "name": name,
-                "year": year,
-                "subtitle": subtitle,
-                "resolution": resolution,
-                "link": link,
-                "db_id": db_id
+                'name': name,
+                'year': year,
+                'subtitle': subtitle,
+                'resolution': resolution,
+                'link': link,
+                'db_id': db_id,
             }
 
             self.logger.info(f"Successfully processed movie: {name} ({year})")
@@ -221,13 +399,14 @@ class MovieScraper:
             return False, None
 
     def run(self):
-        """
-        Run the scraper for the configured range of pages.
-
-        Returns:
-            int: Number of movies successfully scraped
-        """
         initialize_database()
+        end = self.end_page
+        if end is None:
+            self.logger.info("Detecting last list page from page 1…")
+            end = detect_last_movie_list_page()
+            self.logger.info(f"Using last page: {end}")
+        self.end_page = end
+
         self.logger.info(f"Starting scraper for pages {self.start_page} to {self.end_page}")
 
         successful_movies = 0

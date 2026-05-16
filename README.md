@@ -46,7 +46,7 @@ python -m movie_crawler init
 - `paths.py`：路径配置（下载目录、电影目录、数据库路径等）
 - `network.py`：网络配置（代理服务器设置等）
 - `services.py`：服务配置（Aria2 RPC设置、AI接口设置等）
-- `scraper.py`：爬虫配置（爬取设置、请求参数等）
+- `scraper.py`：爬虫配置（站点根 URL、`REQUEST_GAP_SECONDS` 请求间隔以降低 520/429；重试时对部分 HTTP 状态码会追加 `HTTP_COOLDOWN_EXTRA_SECONDS`）
 - `files.py`：文件处理配置
 
 ## 使用方法
