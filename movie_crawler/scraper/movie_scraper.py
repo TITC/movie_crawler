@@ -277,19 +277,18 @@ class MovieScraper:
     def _request_gap(self) -> None:
         _sleep_after_response(self.request_gap_seconds)
 
-    def extract_movie_info(self, html: str, movie_url: str) -> Optional[Dict]:
+    def extract_movie_info(self, html: str, _movie_url: str) -> Tuple[Optional[Dict], Optional[str]]:
         """
         Extract movie dict from detail HTML.
 
         Returns:
-            dict with keys: name, link, year, subtitle, resolution, douban_rating, aka,
-            release_date, genres, runtime_minutes, region, starring, updated_at_site,
-            or None if unusable.
+            (meta, None) on success; meta has keys: name, link, year, subtitle, resolution,
+            douban_rating, aka, release_date, genres, runtime_minutes, region, starring, updated_at_site.
+            (None, reason) when the page should be skipped, with a short Chinese explanation.
         """
         soup = BeautifulSoup(html, 'html.parser')
         meta = _parse_mv_detail(soup)
         name = (meta['name'] or '').strip()
-        year = (meta['year'] or '').strip()
 
         magnets = _gather_magnet_anchors(soup)
         magnet, torrent_label = _pick_largest_magnet(magnets)
@@ -299,11 +298,21 @@ class MovieScraper:
         meta['subtitle'] = subtitle
         meta['resolution'] = resolution
         meta['link'] = link
+
+        skip_parts: List[str] = []
         if not name:
-            return None
+            skip_parts.append(
+                '未解析到影片标题（div.mv_detail 内 h1 与 <title> 均未得到有效片名）'
+            )
         if not link:
-            return None
-        return meta
+            skip_parts.append(
+                f'未找到 magnet 磁力链接（'
+                f'页面中共收集到 {len(magnets)} 个 magnet 锚点；'
+                f'若仅有 FTP/迅雷/剪辑等格式则不会入库）'
+            )
+        if skip_parts:
+            return None, '；'.join(skip_parts)
+        return meta, None
 
     def scrape_movie_list_page(self, page_number):
         url = movie_list_page_url(page_number)
@@ -361,10 +370,15 @@ class MovieScraper:
         try:
             html = fetch_url_with_retry(movie_url)
             self._request_gap()
-            info = self.extract_movie_info(html, movie_url)
+            info, skip_reason = self.extract_movie_info(html, movie_url)
 
             if not info:
-                self.logger.warning(f"Skipping movie with incomplete info: {movie_url}")
+                detail = skip_reason or '原因未知（extract_movie_info 返回空且无说明）'
+                self.logger.warning(
+                    'Skipping movie with incomplete info: %s — %s',
+                    movie_url,
+                    detail,
+                )
                 return False, None
 
             name = info['name']
