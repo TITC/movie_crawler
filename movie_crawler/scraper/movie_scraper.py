@@ -13,7 +13,12 @@ from typing import Dict, List, Optional, Tuple, Union
 from bs4 import BeautifulSoup
 
 from movie_crawler.config.paths import DOWNLOAD_PATH
-from movie_crawler.config.scraper import REQUEST_GAP_SECONDS, movie_list_page_url
+from movie_crawler.config.scraper import (
+    LIST_KIND_MOVIE,
+    LIST_KIND_TOP250,
+    REQUEST_GAP_SECONDS,
+    movie_list_page_url,
+)
 from movie_crawler.downloader.aria2 import add_magnet_link_to_aria2
 from movie_crawler.utils.common import fetch_url_with_retry
 from movie_crawler.utils.database import (
@@ -41,6 +46,7 @@ def _sleep_after_response(gap_seconds: float) -> None:
 
 _MOVIE_DETAIL_PATH_RE = re.compile(r'/movie/\d+\.html$', re.IGNORECASE)
 _INDEX_PAGE_PATH_RE = re.compile(r'/movie/index_(\d+)\.html$', re.IGNORECASE)
+_TOP250_INDEX_PAGE_PATH_RE = re.compile(r'/top250/index_(\d+)\.html$', re.IGNORECASE)
 _JIANPIAN_PATH_RE = re.compile(r'(?:^|[?&])path=([^&]+)', re.IGNORECASE)
 
 # Sizes in torrent labels: [2.8G], 1.05 GiB, 820 MB
@@ -124,10 +130,16 @@ def _subtitle_and_resolution_from_label(label: str) -> Tuple[str, str]:
     return subtitle, resolution
 
 
-def detect_last_movie_list_page(gap_seconds: Optional[float] = None) -> int:
+def detect_last_movie_list_page(
+    gap_seconds: Optional[float] = None,
+    list_kind: str = LIST_KIND_MOVIE,
+) -> int:
     """Parse list page 1 pagination and return highest index_* page number."""
     gap = REQUEST_GAP_SECONDS if gap_seconds is None else gap_seconds
-    base_url = movie_list_page_url(1)
+    path_re = (
+        _TOP250_INDEX_PAGE_PATH_RE if list_kind == LIST_KIND_TOP250 else _INDEX_PAGE_PATH_RE
+    )
+    base_url = movie_list_page_url(1, list_kind=list_kind)
     html = fetch_url_with_retry(base_url)
     _sleep_after_response(gap)
     soup = BeautifulSoup(html, 'html.parser')
@@ -135,7 +147,7 @@ def detect_last_movie_list_page(gap_seconds: Optional[float] = None) -> int:
     for a in soup.find_all('a', href=True):
         full = urllib.parse.urljoin(base_url, a['href'])
         path = urllib.parse.urlparse(full).path
-        m = _INDEX_PAGE_PATH_RE.search(path)
+        m = path_re.search(path)
         if m:
             numbers.append(int(m.group(1)))
     return max(numbers) if numbers else 1
@@ -250,6 +262,7 @@ class MovieScraper:
         end_page=None,
         download_movies=False,
         request_gap_seconds=None,
+        list_kind: str = LIST_KIND_MOVIE,
     ):
         """
         Args:
@@ -258,10 +271,12 @@ class MovieScraper:
             download_movies (bool): Queue magnets in Aria2 when True.
             request_gap_seconds (Optional[float]): Seconds to sleep after each successful HTTP fetch;
                 None uses config scraper.REQUEST_GAP_SECONDS (set to 0 to disable pacing).
+            list_kind (str): ``movie``（默认 /movie/ 列表）或 ``top250``（/top250/ 豆瓣 Top250）。
         """
         self.start_page = start_page
         self.end_page = end_page
         self.download_movies = download_movies
+        self.list_kind = list_kind
         self.request_gap_seconds = (
             REQUEST_GAP_SECONDS if request_gap_seconds is None else float(request_gap_seconds)
         )
@@ -315,7 +330,7 @@ class MovieScraper:
         return meta, None
 
     def scrape_movie_list_page(self, page_number):
-        url = movie_list_page_url(page_number)
+        url = movie_list_page_url(page_number, list_kind=self.list_kind)
         self.logger.info(f"Scraping movie list page: {url}")
 
         try:
@@ -434,7 +449,9 @@ class MovieScraper:
         end = self.end_page
         if end is None:
             self.logger.info("Detecting last list page from page 1…")
-            end = detect_last_movie_list_page(self.request_gap_seconds)
+            end = detect_last_movie_list_page(
+                self.request_gap_seconds, list_kind=self.list_kind
+            )
             self.logger.info(f"Using last page: {end}")
         self.end_page = end
 

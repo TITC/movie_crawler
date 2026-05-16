@@ -6,6 +6,7 @@ import logging
 import sys
 from movie_crawler.utils.common import setup_logging
 from movie_crawler.scraper.movie_scraper import MovieScraper
+from movie_crawler.config.scraper import LIST_KIND_MOVIE, LIST_KINDS
 from movie_crawler.checker.movie_checker import VideoIntegrityChecker, MovieMatcher
 from movie_crawler.utils.database import initialize_database, get_all_movies, export_all_movie_links
 from movie_crawler.renamer.movie_renamer import MovieRenamer, TVShowRenamer
@@ -23,6 +24,16 @@ def parse_args():
         'scrape', help='Scrape movies from cilixiong.org（磁力熊）'
     )
     scraper_parser.add_argument('--start-page', type=int, default=1, help='Starting page number')
+    scraper_parser.add_argument(
+        '--list',
+        dest='list_kind',
+        choices=sorted(LIST_KINDS),
+        default=LIST_KIND_MOVIE,
+        help=(
+            'Which list to crawl: movie (/movie/index*.html) or top250 '
+            '(/top250/ then /top250/index_N.html)'
+        ),
+    )
     scraper_parser.add_argument(
         '--end-page',
         type=int,
@@ -91,6 +102,7 @@ def command_scrape(args):
         end_page=args.end_page,
         download_movies=args.download,
         request_gap_seconds=args.request_gap,
+        list_kind=args.list_kind,
     )
     scraper.run()
 

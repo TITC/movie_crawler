@@ -2,15 +2,32 @@
 爬虫相关配置设置
 """
 
-# Scraping settings（磁力熊 电影列表）
+# Scraping settings（磁力熊）
 BASE_URL = 'https://www.cilixiong.org'
 MOVIE_LIST_BASE = f'{BASE_URL}/movie'
+# 榜单：豆瓣 Top250 — 第 1 页为目录地址，第 2 页起为 index_N.html
+TOP250_LIST_BASE = f'{BASE_URL}/top250'
+
+LIST_KIND_MOVIE = 'movie'
+LIST_KIND_TOP250 = 'top250'
+LIST_KINDS = frozenset({LIST_KIND_MOVIE, LIST_KIND_TOP250})
 
 
-def movie_list_page_url(page: int) -> str:
-    """列表页：第 1 页为 index.html，第 n 页为 index_n.html。"""
+def movie_list_page_url(page: int, list_kind: str = LIST_KIND_MOVIE) -> str:
+    """
+    列表页 URL。
+
+    - movie：第 1 页 index.html，第 n 页 index_n.html（/movie/）
+    - top250：第 1 页 /top250/，第 n 页 /top250/index_n.html
+    """
+    if list_kind not in LIST_KINDS:
+        raise ValueError(f'list_kind must be one of {sorted(LIST_KINDS)!r}, got {list_kind!r}')
     if page < 1:
         raise ValueError(f'page must be >= 1, got {page}')
+    if list_kind == LIST_KIND_TOP250:
+        if page == 1:
+            return f'{TOP250_LIST_BASE}/'
+        return f'{TOP250_LIST_BASE}/index_{page}.html'
     if page == 1:
         return f'{MOVIE_LIST_BASE}/index.html'
     return f'{MOVIE_LIST_BASE}/index_{page}.html'
