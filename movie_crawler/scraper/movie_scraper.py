@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 
 from movie_crawler.config.paths import DOWNLOAD_PATH
 from movie_crawler.config.scraper import (
+    LIST_KIND_IMDB_TOP250,
     LIST_KIND_MOVIE,
     LIST_KIND_TOP250,
     REQUEST_GAP_SECONDS,
@@ -47,6 +48,15 @@ def _sleep_after_response(gap_seconds: float) -> None:
 _MOVIE_DETAIL_PATH_RE = re.compile(r'/movie/\d+\.html$', re.IGNORECASE)
 _INDEX_PAGE_PATH_RE = re.compile(r'/movie/index_(\d+)\.html$', re.IGNORECASE)
 _TOP250_INDEX_PAGE_PATH_RE = re.compile(r'/top250/index_(\d+)\.html$', re.IGNORECASE)
+_IMDB_TOP250_INDEX_PAGE_PATH_RE = re.compile(
+    r'/s/imdbtop250/index_(\d+)\.html$',
+    re.IGNORECASE,
+)
+_LIST_KIND_TO_INDEX_RE = {
+    LIST_KIND_MOVIE: _INDEX_PAGE_PATH_RE,
+    LIST_KIND_TOP250: _TOP250_INDEX_PAGE_PATH_RE,
+    LIST_KIND_IMDB_TOP250: _IMDB_TOP250_INDEX_PAGE_PATH_RE,
+}
 _JIANPIAN_PATH_RE = re.compile(r'(?:^|[?&])path=([^&]+)', re.IGNORECASE)
 
 # Sizes in torrent labels: [2.8G], 1.05 GiB, 820 MB
@@ -136,9 +146,7 @@ def detect_last_movie_list_page(
 ) -> int:
     """Parse list page 1 pagination and return highest index_* page number."""
     gap = REQUEST_GAP_SECONDS if gap_seconds is None else gap_seconds
-    path_re = (
-        _TOP250_INDEX_PAGE_PATH_RE if list_kind == LIST_KIND_TOP250 else _INDEX_PAGE_PATH_RE
-    )
+    path_re = _LIST_KIND_TO_INDEX_RE.get(list_kind, _INDEX_PAGE_PATH_RE)
     base_url = movie_list_page_url(1, list_kind=list_kind)
     html = fetch_url_with_retry(base_url)
     _sleep_after_response(gap)
@@ -271,7 +279,7 @@ class MovieScraper:
             download_movies (bool): Queue magnets in Aria2 when True.
             request_gap_seconds (Optional[float]): Seconds to sleep after each successful HTTP fetch;
                 None uses config scraper.REQUEST_GAP_SECONDS (set to 0 to disable pacing).
-            list_kind (str): ``movie``（默认 /movie/ 列表）或 ``top250``（/top250/ 豆瓣 Top250）。
+            list_kind (str): ``movie``（默认 /movie/）、``top250``（豆瓣）或 ``imdbtop250``（/s/imdbtop250/）。
         """
         self.start_page = start_page
         self.end_page = end_page

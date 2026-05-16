@@ -7,10 +7,13 @@ BASE_URL = 'https://www.cilixiong.org'
 MOVIE_LIST_BASE = f'{BASE_URL}/movie'
 # 榜单：豆瓣 Top250 — 第 1 页为目录地址，第 2 页起为 index_N.html
 TOP250_LIST_BASE = f'{BASE_URL}/top250'
+# 榜单：IMDB Top250 — 同上规则，路径在 /s/imdbtop250/
+IMDB_TOP250_LIST_BASE = f'{BASE_URL}/s/imdbtop250'
 
 LIST_KIND_MOVIE = 'movie'
 LIST_KIND_TOP250 = 'top250'
-LIST_KINDS = frozenset({LIST_KIND_MOVIE, LIST_KIND_TOP250})
+LIST_KIND_IMDB_TOP250 = 'imdbtop250'
+LIST_KINDS = frozenset({LIST_KIND_MOVIE, LIST_KIND_TOP250, LIST_KIND_IMDB_TOP250})
 
 
 def movie_list_page_url(page: int, list_kind: str = LIST_KIND_MOVIE) -> str:
@@ -19,6 +22,7 @@ def movie_list_page_url(page: int, list_kind: str = LIST_KIND_MOVIE) -> str:
 
     - movie：第 1 页 index.html，第 n 页 index_n.html（/movie/）
     - top250：第 1 页 /top250/，第 n 页 /top250/index_n.html
+    - imdbtop250：第 1 页 /s/imdbtop250/，第 n 页 /s/imdbtop250/index_n.html
     """
     if list_kind not in LIST_KINDS:
         raise ValueError(f'list_kind must be one of {sorted(LIST_KINDS)!r}, got {list_kind!r}')
@@ -28,6 +32,10 @@ def movie_list_page_url(page: int, list_kind: str = LIST_KIND_MOVIE) -> str:
         if page == 1:
             return f'{TOP250_LIST_BASE}/'
         return f'{TOP250_LIST_BASE}/index_{page}.html'
+    if list_kind == LIST_KIND_IMDB_TOP250:
+        if page == 1:
+            return f'{IMDB_TOP250_LIST_BASE}/'
+        return f'{IMDB_TOP250_LIST_BASE}/index_{page}.html'
     if page == 1:
         return f'{MOVIE_LIST_BASE}/index.html'
     return f'{MOVIE_LIST_BASE}/index_{page}.html'

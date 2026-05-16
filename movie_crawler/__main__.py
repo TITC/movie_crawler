@@ -30,8 +30,7 @@ def parse_args():
         choices=sorted(LIST_KINDS),
         default=LIST_KIND_MOVIE,
         help=(
-            'Which list to crawl: movie (/movie/index*.html) or top250 '
-            '(/top250/ then /top250/index_N.html)'
+            'Which list: movie, top250 (豆瓣 /top250/), imdbtop250 (/s/imdbtop250/)'
         ),
     )
     scraper_parser.add_argument(
